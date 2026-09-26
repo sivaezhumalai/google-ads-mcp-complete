@@ -396,30 +396,35 @@ class KeywordTools:
         self,
         customer_id: str,
         ad_group_id: str,
-        keyword_id: str
+        keyword_id: str,
+        validate_only: bool = False
     ) -> Dict[str, Any]:
-        """Delete a specific keyword."""
+        """Delete (REMOVE) a specific keyword. Supports validate_only dry-run."""
         try:
+            from .utils import run_mutate
             client = self.auth_manager.get_client(customer_id)
             ad_group_criterion_service = client.get_service("AdGroupCriterionService")
-            
+
             # Create remove operation
             ad_group_criterion_operation = client.get_type("AdGroupCriterionOperation")
             ad_group_criterion_operation.remove = client.get_service("AdGroupCriterionService").ad_group_criterion_path(
                 customer_id, ad_group_id, keyword_id
             )
-            
-            # Execute the removal
-            response = ad_group_criterion_service.mutate_ad_group_criteria(
-                customer_id=customer_id,
-                operations=[ad_group_criterion_operation]
+
+            # Execute the removal (or validate only)
+            response = run_mutate(
+                client, ad_group_criterion_service.mutate_ad_group_criteria,
+                "MutateAdGroupCriteriaRequest", customer_id,
+                [ad_group_criterion_operation], validate_only=validate_only,
             )
-            
+
             return {
                 "success": True,
                 "keyword_id": keyword_id,
-                "message": "Keyword deleted successfully",
-                "resource_name": response.results[0].resource_name,
+                "validate_only": validate_only,
+                "message": ("[VALIDATE ONLY] Keyword delete is valid (not applied)"
+                            if validate_only else "Keyword deleted successfully"),
+                "resource_name": (response.results[0].resource_name if response.results else None),
             }
             
         except GoogleAdsException as e:

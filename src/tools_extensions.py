@@ -348,46 +348,75 @@ class ExtensionTools:
             call_only: Whether this is call-only (default: False)
         """
         try:
+            from .utils import run_mutate
             client = self.auth_manager.get_client(customer_id)
-            extension_feed_item_service = client.get_service("ExtensionFeedItemService")
-            
-            # Create call extension
-            extension_feed_item_operation = client.get_type("ExtensionFeedItemOperation")
-            extension_feed_item = extension_feed_item_operation.create
-            
-            # Set extension type
-            extension_feed_item.extension_type = client.enums.ExtensionTypeEnum.CALL
-            
-            # Set call feed item
-            call_feed_item = extension_feed_item.call_feed_item
-            call_feed_item.phone_number = phone_number
-            call_feed_item.country_code = country_code
-            call_feed_item.call_tracking_enabled = True
-            call_feed_item.call_conversion_action = ""  # Can be set if conversion tracking is needed
-            call_feed_item.call_conversion_tracking_disabled = False
-            
-            # Set targeted campaign
-            extension_feed_item.targeted_campaign = client.get_service("CampaignService").campaign_path(
-                customer_id, campaign_id
+
+            # Modern asset-based call extension (CallAsset + CampaignAsset).
+            # Google sunset legacy call-only ads / ExtensionFeedItem call
+            # extensions; call assets are the supported mechanism in v25.
+            asset_service = client.get_service("AssetService")
+            asset_op = client.get_type("AssetOperation")
+            asset = asset_op.create
+            asset.name = f"Call Asset {phone_number}"
+            asset.call_asset.country_code = country_code
+            asset.call_asset.phone_number = phone_number
+            asset.call_asset.call_conversion_reporting_state = (
+                client.enums.CallConversionReportingStateEnum.USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION
             )
-            
-            # Execute operation
-            response = extension_feed_item_service.mutate_extension_feed_items(
-                customer_id=customer_id,
-                operations=[extension_feed_item_operation]
-            )
-            
+            try:
+                asset_resp = asset_service.mutate_assets(
+                    customer_id=customer_id, operations=[asset_op]
+                )
+                asset_rn = asset_resp.results[0].resource_name
+            except GoogleAdsException as e:
+                # The account may already have an identical call asset; reuse it.
+                ga = client.get_service("GoogleAdsService")
+                asset_rn = None
+                for row in ga.search(
+                    customer_id=customer_id,
+                    query=("SELECT asset.resource_name, asset.call_asset.phone_number "
+                           "FROM asset WHERE asset.type = 'CALL'"),
+                ):
+                    if row.asset.call_asset.phone_number.replace(" ", "") == phone_number.replace(" ", ""):
+                        asset_rn = row.asset.resource_name
+                        break
+                if not asset_rn:
+                    raise
+
+            # Link the call asset to the campaign.
+            ca_service = client.get_service("CampaignAssetService")
+            ca_op = client.get_type("CampaignAssetOperation")
+            ca = ca_op.create
+            ca.campaign = client.get_service("CampaignService").campaign_path(customer_id, campaign_id)
+            ca.asset = asset_rn
+            ca.field_type = client.enums.AssetFieldTypeEnum.CALL
+
+            link_rn = None
+            try:
+                resp = run_mutate(
+                    client, ca_service.mutate_campaign_assets, "MutateCampaignAssetsRequest",
+                    customer_id, [ca_op], validate_only=False,
+                )
+                link_rn = resp.results[0].resource_name
+            except GoogleAdsException as e:
+                if "already exists" in str(e).lower():
+                    link_rn = "already linked"
+                else:
+                    raise
+
             return {
                 "success": True,
                 "campaign_id": campaign_id,
                 "phone_number": phone_number,
                 "country_code": country_code,
-                "resource_name": response.results[0].resource_name,
+                "asset_resource_name": asset_rn,
+                "campaign_asset_resource_name": link_rn,
+                "note": "Call asset attached with account-level call conversion reporting.",
             }
-            
+
         except GoogleAdsException as e:
             logger.error(f"Failed to create call extension: {e}")
-            raise
+            return self.error_handler.format_error_response(e)
     
     async def list_extensions(
         self,

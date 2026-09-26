@@ -1,8 +1,24 @@
-# Complete Google Ads API v21 MCP Server
+# Complete Google Ads API MCP Server
 
-**🎉 FULLY FUNCTIONAL** - 40+ tools implemented with complete automation capabilities!
+**🎉 FULLY FUNCTIONAL** — 78 tools implemented with complete automation capabilities!
 
-A comprehensive Model Context Protocol (MCP) server that provides full access to Google Ads API v21 functionality. This server enables AI assistants to create, optimize, and manage Google Ads campaigns with complete automation through natural language commands.
+A comprehensive Model Context Protocol (MCP) server that provides full access to Google Ads functionality (google-ads library 33.x / API v25). This server enables AI assistants and autonomous agents to create, optimize, and manage Google Ads campaigns with complete automation through natural language commands.
+
+## ✅ v25 Hardening (agent-ready) — 2026-09-27
+
+This build was audited against the live Google Ads v25 API and hardened for autonomous agent use:
+
+- **Manager (MCC) access fixed** — `login_customer_id` is always the manager account, so client accounts under an MCC no longer return `USER_PERMISSION_DENIED`. Set `login_customer_id` to your MCC in the config.
+- **v25 field renames fixed** — `campaign.start_date`→`start_date_time`, `campaign.end_date`→`end_date_time`, `metrics.conversion_rate`→`metrics.conversions_from_interactions_rate`, removed the obsolete `metrics.average_position`. This repaired `get_campaign`, `get_campaign_performance`, `get_keyword_performance`, and campaign create/update.
+- **`create_campaign` now honors the requested bidding strategy** (was hardcoded to Manual CPC) and **applies location targeting** (was disabled). `get_campaign` now returns campaigns with zero traffic.
+- **`run_gaql_query` enabled** — run ANY read-only GAQL query; returns only the SELECTed fields (compact, agent-friendly). Read everything in the account.
+- **New write control**: `set_campaign_bidding_strategy`, `add_campaign_location`, `add_campaign_language`, `list_campaign_criteria`, `remove_campaign_criterion`, `set_eu_political_advertising`, `search_geo_targets`.
+- **Conversion tracking**: `list_conversion_actions`, `create_conversion_action` (leads/calls/purchases).
+- **Recommendations & audit**: `get_recommendations`, `apply_recommendation`, `dismiss_recommendation`, `get_change_history`.
+- **Modernized call extensions** — asset-based `CallAsset` (Google sunset legacy call-only ads / `ExtensionFeedItem` call extensions).
+- **Safety `validate_only` flag** on mutating tools (update/delete campaign, delete ad/keyword, bidding, targeting, conversions, apply_recommendation) — validate a change against the API without applying it (dry-run).
+
+A comprehensive Model Context Protocol (MCP) server that provides full access to Google Ads API v25 functionality. This server enables AI assistants to create, optimize, and manage Google Ads campaigns with complete automation through natural language commands.
 
 ## 🚀 What Makes This Different
 

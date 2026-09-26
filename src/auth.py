@@ -156,11 +156,19 @@ class GoogleAdsAuthManager:
                 "use_proto_plus": self.config.get("use_proto_plus", True),
             }
             
-            # Add customer IDs
-            if customer_id:
-                client_config["login_customer_id"] = customer_id.replace("-", "")
-            elif login_customer_id := self.config.get("login_customer_id"):
+            # Add customer IDs.
+            # login_customer_id is sent as the 'login-customer-id' request header
+            # and identifies the account you authenticate *through*. When a
+            # manager account is configured it must ALWAYS be used here, even when
+            # operating on a client account below it — otherwise the API returns
+            # USER_PERMISSION_DENIED for those client accounts. The account being
+            # operated on (`customer_id`) is passed separately to each API call,
+            # not here. Only fall back to the queried customer_id when no manager
+            # login_customer_id is configured (direct single-account access).
+            if login_customer_id := self.config.get("login_customer_id"):
                 client_config["login_customer_id"] = login_customer_id.replace("-", "")
+            elif customer_id:
+                client_config["login_customer_id"] = customer_id.replace("-", "")
                 
             if linked_customer_id := self.config.get("linked_customer_id"):
                 client_config["linked_customer_id"] = linked_customer_id.replace("-", "")

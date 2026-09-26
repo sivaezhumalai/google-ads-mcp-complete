@@ -1,4 +1,4 @@
-"""Google Ads API v20 MCP Server with comprehensive functionality."""
+"""Google Ads API v25 MCP Server with comprehensive, agent-ready functionality."""
 
 import asyncio
 import json
@@ -23,7 +23,7 @@ logger = structlog.get_logger(__name__)
 
 
 class GoogleAdsMCPServer:
-    """MCP Server for Google Ads API v20."""
+    """MCP Server for Google Ads API v25."""
     
     def __init__(self, config_path: Optional[Path] = None):
         """Initialize the Google Ads MCP Server.
@@ -132,7 +132,7 @@ class GoogleAdsMCPServer:
         return """# Google Ads MCP Server Documentation
 
 ## Overview
-This MCP server provides comprehensive access to Google Ads API v20 functionality.
+This MCP server provides comprehensive, agent-ready access to Google Ads API v25.
 
 ## Authentication
 The server supports two authentication methods:
@@ -194,10 +194,18 @@ The server supports two authentication methods:
 - **get_search_terms_report**: Get search terms report
 
 ### Advanced Features
-- **get_recommendations**: Get optimization recommendations
-- **apply_recommendation**: Apply a specific recommendation
-- **create_experiment**: Create a campaign experiment
-- **get_change_history**: Get account change history
+- **run_gaql_query**: Run ANY read-only GAQL query (read every resource/field). Returns only the SELECTed fields.
+- **search_geo_targets**: Resolve place names to geo target IDs for location targeting
+- **set_campaign_bidding_strategy**: Switch to Maximize Clicks/Conversions/Target CPA/ROAS/Manual/Target Impression Share
+- **add_campaign_location / add_campaign_language / list_campaign_criteria / remove_campaign_criterion**: Full targeting control
+- **set_eu_political_advertising**: Declare EU political ads status (required before some edits)
+- **list_conversion_actions / create_conversion_action**: Manage lead/call/purchase conversion tracking
+- **get_recommendations / apply_recommendation / dismiss_recommendation**: Optimization recommendations
+- **get_change_history**: Account change history (change_event)
+
+### Safety: validate_only
+Mutating tools (update/delete campaign, delete ad/keyword, bidding, targeting, conversions, apply_recommendation)
+accept **validate_only=true** to validate a change against the API WITHOUT applying it (dry-run).
 
 ## Error Handling
 The server automatically handles:
@@ -302,7 +310,7 @@ LIMIT [number]
 - metrics.cost_micros (cost in micros, divide by 1,000,000)
 - metrics.ctr (click-through rate)
 - metrics.average_cpc (average cost per click)
-- metrics.conversions, metrics.conversion_rate
+- metrics.conversions, metrics.conversions_from_interactions_rate
 
 ### Segments
 - segments.date (for daily data)

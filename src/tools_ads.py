@@ -420,35 +420,39 @@ class AdTools:
         self,
         customer_id: str,
         ad_group_id: str,
-        ad_id: str
+        ad_id: str,
+        validate_only: bool = False
     ) -> Dict[str, Any]:
-        """Delete a specific ad."""
+        """Delete (REMOVE) a specific ad. Supports validate_only dry-run."""
         try:
+            from .utils import run_mutate
             client = self.auth_manager.get_client(customer_id)
             ad_group_ad_service = client.get_service("AdGroupAdService")
-            
+
             # Create remove operation
             ad_group_ad_operation = client.get_type("AdGroupAdOperation")
             ad_group_ad_operation.remove = client.get_service("AdGroupAdService").ad_group_ad_path(
                 customer_id, ad_group_id, ad_id
             )
-            
-            # Execute the removal
-            response = ad_group_ad_service.mutate_ad_group_ads(
-                customer_id=customer_id,
-                operations=[ad_group_ad_operation]
+
+            # Execute the removal (or validate only)
+            response = run_mutate(
+                client, ad_group_ad_service.mutate_ad_group_ads, "MutateAdGroupAdsRequest",
+                customer_id, [ad_group_ad_operation], validate_only=validate_only,
             )
-            
+
             return {
                 "success": True,
                 "ad_id": ad_id,
-                "message": "Ad deleted successfully",
-                "resource_name": response.results[0].resource_name,
+                "validate_only": validate_only,
+                "message": ("[VALIDATE ONLY] Ad delete is valid (not applied)"
+                            if validate_only else "Ad deleted successfully"),
+                "resource_name": (response.results[0].resource_name if response.results else None),
             }
-            
+
         except GoogleAdsException as e:
             logger.error(f"Failed to delete ad: {e}")
-            raise
+            return self.error_handler.format_error_response(e)
     
     async def get_ad_strength_and_review_status(
         self,

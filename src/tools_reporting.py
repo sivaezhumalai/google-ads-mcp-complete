@@ -31,11 +31,14 @@ class ReportingTools:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
             
-            # Default metrics if not specified
+            # Default metrics if not specified.
+            # NOTE: v25 removed metrics.conversion_rate; the current field is
+            # metrics.conversions_from_interactions_rate.
             if not metrics:
                 metrics = [
                     "clicks", "impressions", "cost_micros", "conversions",
-                    "ctr", "average_cpc", "conversion_rate", "cost_per_conversion"
+                    "ctr", "average_cpc", "conversions_from_interactions_rate",
+                    "cost_per_conversion"
                 ]
                 
             # Build metrics selection
@@ -80,7 +83,7 @@ class ReportingTools:
                     if metric.endswith("_micros"):
                         campaign_data["metrics"][metric.replace("_micros", "")] = micros_to_currency(value)
                         total_metrics[metric] += value
-                    elif metric in ["ctr", "conversion_rate"]:
+                    elif metric in ["ctr", "conversions_from_interactions_rate"]:
                         campaign_data["metrics"][metric] = f"{value:.2%}"
                         total_metrics[metric] += value
                     else:
@@ -94,7 +97,7 @@ class ReportingTools:
             for metric, value in total_metrics.items():
                 if metric.endswith("_micros"):
                     formatted_totals[metric.replace("_micros", "")] = micros_to_currency(value)
-                elif metric in ["ctr", "conversion_rate"]:
+                elif metric in ["ctr", "conversions_from_interactions_rate"]:
                     # Calculate weighted average for rates
                     if len(campaigns) > 0:
                         formatted_totals[metric] = f"{value/len(campaigns):.2%}"
@@ -220,8 +223,7 @@ class ReportingTools:
                     metrics.conversions,
                     metrics.ctr,
                     metrics.average_cpc,
-                    metrics.conversions,
-                    metrics.average_position
+                    metrics.conversions
                 FROM keyword_view
                 WHERE segments.date DURING {date_range}
                     AND ad_group_criterion.type = 'KEYWORD'
@@ -259,7 +261,6 @@ class ReportingTools:
                         "ctr": f"{row.metrics.ctr:.2%}",
                         "average_cpc": micros_to_currency(row.metrics.average_cpc),
                         "conversion_rate": f"{(row.metrics.conversions / row.metrics.clicks * 100):.2f}%" if row.metrics.clicks > 0 else "0.00%",
-                        "average_position": f"{row.metrics.average_position:.1f}" if row.metrics.average_position else "N/A",
                     },
                 })
                 
@@ -277,57 +278,95 @@ class ReportingTools:
             logger.error(f"Unexpected error getting keyword performance: {e}")
             raise
             
-    async def run_gaql_query(self, customer_id: str, query: str) -> Dict[str, Any]:
-        """Run custom GAQL queries."""
+    async def run_gaql_query(self, customer_id: str, query: str,
+                             limit: int = 1000) -> Dict[str, Any]:
+        """Run any read-only GAQL query.
+
+        Only the fields named in the SELECT clause are returned (keyed by their
+        dotted path, e.g. "campaign.name"), which keeps responses compact and
+        predictable for an autonomous agent. Enums are returned by name and
+        *_micros fields include a human currency value alongside the raw micros.
+        """
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
-            # Clean up the query
-            query = query.strip()
-            if query.endswith(";"):
-                query = query[:-1]
-                
-            # Use search_stream for large result sets
-            stream = googleads_service.search_stream(
-                customer_id=customer_id,
-                query=query,
-            )
-            
+
+            query = query.strip().rstrip(";")
+
+            # Parse the SELECT field list so we only serialize requested fields.
+            select_fields = self._parse_select_fields(query)
+
+            stream = googleads_service.search_stream(customer_id=customer_id, query=query)
+
             rows = []
-            fields = set()
-            
+            truncated = False
             for batch in stream:
                 for row in batch.results:
-                    row_data = {}
-                    
-                    # Extract fields dynamically
-                    for field_name in dir(row):
-                        if not field_name.startswith("_"):
-                            field_value = getattr(row, field_name)
-                            if hasattr(field_value, "__class__"):
-                                # Handle nested objects
-                                nested_data = self._extract_nested_fields(field_value)
-                                if nested_data:
-                                    row_data[field_name] = nested_data
-                                    fields.add(field_name)
-                                    
-                    rows.append(row_data)
-                    
+                    rows.append(self._project_row(row, select_fields))
+                    if len(rows) >= limit:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+
             return {
                 "success": True,
                 "query": query,
+                "fields": select_fields,
                 "rows": rows,
                 "row_count": len(rows),
-                "fields": list(fields),
+                "truncated": truncated,
             }
-            
+
         except GoogleAdsException as e:
             logger.error(f"Failed to run GAQL query: {e}")
             return self.error_handler.format_error_response(e)
         except Exception as e:
             logger.error(f"Unexpected error running GAQL query: {e}")
-            raise
+            return {"success": False, "error": str(e), "error_type": "UnexpectedError"}
+
+    def _parse_select_fields(self, query: str) -> List[str]:
+        """Extract the dotted field paths from a GAQL SELECT clause."""
+        import re
+        m = re.search(r"select\s+(.*?)\s+from\s", query, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return []
+        return [f.strip() for f in m.group(1).split(",") if f.strip()]
+
+    def _project_row(self, row, select_fields: List[str]) -> Dict[str, Any]:
+        """Pull only the selected dotted paths out of a result row."""
+        out = {}
+        for path in select_fields:
+            try:
+                obj = row
+                for part in path.split("."):
+                    obj = getattr(obj, part)
+                out[path] = self._serialize_value(path, obj)
+            except Exception:
+                out[path] = None
+        return out
+
+    def _serialize_value(self, path, value):
+        """Serialize a leaf GAQL value (enum -> name, micros -> currency, repeated -> list)."""
+        # Enum values expose .name
+        if hasattr(value, "name") and not isinstance(value, (bytes,)):
+            try:
+                return value.name
+            except Exception:
+                pass
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if isinstance(path, str) and path.endswith("_micros"):
+                return {"micros": value, "value": micros_to_currency(value)}
+            return value
+        if isinstance(value, (str,)):
+            return value
+        # Repeated / composite fields
+        try:
+            return [self._serialize_value(path, v) for v in value]
+        except TypeError:
+            return str(value)
             
     def _extract_nested_fields(self, obj) -> Dict[str, Any]:
         """Extract fields from nested objects."""

@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
 import base64
 import structlog
 
@@ -21,6 +22,7 @@ from .tools_extensions import ExtensionTools
 from .tools_audiences import AudienceTools
 from .tools_geography import GeographyTools
 from .tools_bidding import BiddingTools
+from .tools_conversions import ConversionTools
 from .utils import currency_to_micros, micros_to_currency
 
 logger = structlog.get_logger(__name__)
@@ -45,7 +47,8 @@ class GoogleAdsTools:
         self.audience_tools = AudienceTools(auth_manager, error_handler)
         self.geography_tools = GeographyTools(auth_manager, error_handler)
         self.bidding_tools = BiddingTools(auth_manager, error_handler)
-        
+        self.conversion_tools = ConversionTools(auth_manager, error_handler)
+
         self._tools_registry = self._register_all_tools()
         
     def _register_all_tools(self) -> Dict[str, Dict[str, Any]]:
@@ -91,10 +94,14 @@ class GoogleAdsTools:
         
         # Bidding Strategy & Bid Adjustments
         tools.update(self._register_bidding_tools())
-        
-        # # Advanced Features
-        # tools.update(self._register_advanced_tools())
-        
+
+        # Conversion action management
+        tools.update(self._register_conversion_tools())
+
+        # Raw GAQL access (read anything) + advanced features
+        tools.update(self._register_raw_tools())
+        tools.update(self._register_advanced_tools())
+
         return tools
         
     def _register_account_tools(self) -> Dict[str, Dict[str, Any]]:
@@ -150,6 +157,7 @@ class GoogleAdsTools:
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
                     "bidding_strategy": {"type": "string"},
+                    "validate_only": {"type": "boolean", "default": False},
                 },
             },
             "pause_campaign": {
@@ -186,11 +194,12 @@ class GoogleAdsTools:
                 },
             },
             "delete_campaign": {
-                "description": "Delete a campaign permanently",
+                "description": "Delete (REMOVE) a campaign. Supports validate_only dry-run.",
                 "handler": self.campaign_tools.delete_campaign,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "campaign_id": {"type": "string", "required": True},
+                    "validate_only": {"type": "boolean", "default": False},
                 },
             },
             "copy_campaign": {
@@ -221,8 +230,76 @@ class GoogleAdsTools:
                     "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
+            "set_campaign_bidding_strategy": {
+                "description": "Switch a campaign to a STANDARD bidding strategy: MAXIMIZE_CLICKS, MAXIMIZE_CONVERSIONS, TARGET_CPA, MAXIMIZE_CONVERSION_VALUE, TARGET_ROAS, MANUAL_CPC, or TARGET_IMPRESSION_SHARE. Optional: cpc_bid_ceiling_micros, target_cpa_micros, target_roas, impression-share params. Supports validate_only.",
+                "handler": self.campaign_tools.set_campaign_bidding_strategy,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "strategy_type": {"type": "string", "required": True},
+                    "cpc_bid_ceiling_micros": {"type": "number"},
+                    "target_cpa_micros": {"type": "number"},
+                    "target_roas": {"type": "number"},
+                    "target_impression_share_location": {"type": "string", "default": "ANYWHERE_ON_PAGE"},
+                    "target_impression_share_fraction_micros": {"type": "number"},
+                    "enhanced_cpc": {"type": "boolean", "default": False},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+            "add_campaign_location": {
+                "description": "Add or exclude geo targeting on a campaign. locations = place names ('Jigani','Bengaluru'), numeric geo IDs, or geoTargetConstants/<id> resource names. Set negative=true to exclude. Supports validate_only.",
+                "handler": self.campaign_tools.add_campaign_location,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "locations": {"type": "array", "required": True},
+                    "country_code": {"type": "string", "default": "IN"},
+                    "negative": {"type": "boolean", "default": False},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+            "set_eu_political_advertising": {
+                "description": "Declare whether a campaign contains EU political advertising. Required by Google before some edits (e.g. location targeting). Non-political/non-EU advertisers set contains_eu_political_ads=false. Supports validate_only.",
+                "handler": self.campaign_tools.set_eu_political_advertising,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "contains_eu_political_ads": {"type": "boolean", "default": False},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+            "add_campaign_language": {
+                "description": "Add language targeting to a campaign. languages = names (English, Hindi, Kannada, Tamil, Telugu, ...) or numeric language constant IDs. Supports validate_only.",
+                "handler": self.campaign_tools.add_campaign_language,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "languages": {"type": "array", "required": True},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+            "list_campaign_criteria": {
+                "description": "List a campaign's criteria (locations, languages, campaign-level negative keywords, proximity) with resource names and criterion IDs for use with remove_campaign_criterion.",
+                "handler": self.campaign_tools.list_campaign_criteria,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "criterion_type": {"type": "string"},
+                },
+            },
+            "remove_campaign_criterion": {
+                "description": "Remove a campaign criterion (targeted/excluded location, language, or campaign-level negative keyword). Provide criterion_resource_name OR campaign_id + criterion_id. Supports validate_only.",
+                "handler": self.campaign_tools.remove_campaign_criterion,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "criterion_resource_name": {"type": "string"},
+                    "campaign_id": {"type": "string"},
+                    "criterion_id": {"type": "string"},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
         }
-        
+
     def _register_ad_group_tools(self) -> Dict[str, Dict[str, Any]]:
         """Register ad group management tools."""
         return {
@@ -330,12 +407,13 @@ class GoogleAdsTools:
                 },
             },
             "delete_ad": {
-                "description": "Delete a specific ad",
+                "description": "Delete (REMOVE) a specific ad. Supports validate_only dry-run.",
                 "handler": self.ad_tools.delete_ad,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string", "required": True},
                     "ad_id": {"type": "string", "required": True},
+                    "validate_only": {"type": "boolean", "default": False},
                 },
             },
             "compare_ad_performance": {
@@ -497,12 +575,13 @@ class GoogleAdsTools:
                 },
             },
             "delete_keyword": {
-                "description": "Delete a specific keyword",
+                "description": "Delete (REMOVE) a specific keyword. Supports validate_only dry-run.",
                 "handler": self.keyword_tools.delete_keyword,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string", "required": True},
                     "keyword_id": {"type": "string", "required": True},
+                    "validate_only": {"type": "boolean", "default": False},
                 },
             },
             "pause_keyword": {
@@ -649,30 +728,95 @@ class GoogleAdsTools:
         """Register advanced feature tools."""
         return {
             "get_recommendations": {
-                "description": "Get optimization recommendations",
+                "description": "Get Google Ads optimization recommendations (keyword ideas, budget, bidding, ad strength, etc.). Optional recommendation_type filter (e.g. KEYWORD, CAMPAIGN_BUDGET, TARGET_CPA_OPT_IN).",
                 "handler": self.get_recommendations,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
+                    "recommendation_type": {"type": "string"},
+                    "limit": {"type": "number", "default": 50},
                 },
             },
             "apply_recommendation": {
-                "description": "Apply a specific recommendation",
+                "description": "Apply a specific recommendation by its resource name (from get_recommendations). Supports validate_only.",
                 "handler": self.apply_recommendation,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
-                    "recommendation_id": {"type": "string", "required": True},
+                    "recommendation_resource_name": {"type": "string", "required": True},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+            "dismiss_recommendation": {
+                "description": "Dismiss (hide) a recommendation by its resource name.",
+                "handler": self.dismiss_recommendation,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "recommendation_resource_name": {"type": "string", "required": True},
                 },
             },
             "get_change_history": {
-                "description": "Get account change history",
+                "description": "Get account change history (who changed what, when) from the change_event resource. days_ago must be 1-29 (API limit).",
                 "handler": self.get_change_history,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
-                    "date_range": {"type": "string", "default": "LAST_7_DAYS"},
+                    "days_ago": {"type": "number", "default": 14},
+                    "limit": {"type": "number", "default": 200},
                 },
             },
         }
-        
+
+    def _register_conversion_tools(self) -> Dict[str, Dict[str, Any]]:
+        """Register conversion action tools."""
+        return {
+            "list_conversion_actions": {
+                "description": "List all conversion actions (name, type, category, status, primary/secondary) — e.g. Website lead, Calls from ads.",
+                "handler": self.conversion_tools.list_conversion_actions,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "include_removed": {"type": "boolean", "default": False},
+                },
+            },
+            "create_conversion_action": {
+                "description": "Create a conversion action for tracking leads/calls/purchases. category: LEAD, SUBMIT_LEAD_FORM, PHONE_CALL_LEAD, PURCHASE, CONTACT, DEFAULT. action_type: WEBPAGE, CLICK_TO_CALL, WEBSITE_CALL, UPLOAD_CLICKS, UPLOAD_CALLS. Supports validate_only.",
+                "handler": self.conversion_tools.create_conversion_action,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "name": {"type": "string", "required": True},
+                    "category": {"type": "string", "default": "LEAD"},
+                    "action_type": {"type": "string", "default": "WEBPAGE"},
+                    "status": {"type": "string", "default": "ENABLED"},
+                    "default_value": {"type": "number"},
+                    "always_use_default_value": {"type": "boolean", "default": False},
+                    "counting_type": {"type": "string", "default": "ONE_PER_CLICK"},
+                    "primary_for_goal": {"type": "boolean", "default": True},
+                    "validate_only": {"type": "boolean", "default": False},
+                },
+            },
+        }
+
+    def _register_raw_tools(self) -> Dict[str, Dict[str, Any]]:
+        """Register raw GAQL access tools (read anything in the account)."""
+        return {
+            "run_gaql_query": {
+                "description": "Run any read-only GAQL (Google Ads Query Language) query and return rows. Use this to read ANY resource/field not covered by a specific tool. Example: SELECT campaign.name, metrics.clicks FROM campaign WHERE segments.date DURING LAST_7_DAYS.",
+                "handler": self.reporting_tools.run_gaql_query,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "query": {"type": "string", "required": True},
+                    "limit": {"type": "number", "default": 1000},
+                },
+            },
+            "search_geo_targets": {
+                "description": "Resolve place names to geo target IDs (for location targeting). names = ['Jigani','Anekal']; returns geoTargetConstants/<id>, canonical name and type.",
+                "handler": self.search_geo_targets,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "names": {"type": "array", "required": True},
+                    "country_code": {"type": "string", "default": "IN"},
+                    "locale": {"type": "string", "default": "en"},
+                },
+            },
+        }
+
     def get_all_tools(self) -> List[Tool]:
         """Get all tools in MCP format."""
         tools = []
@@ -824,7 +968,142 @@ class GoogleAdsTools:
         except Exception as e:
             logger.error(f"Failed to get account hierarchy: {e}")
             raise
-    
+
+    # ---- Advanced handlers (recommendations, change history, geo search) ----
+
+    async def get_recommendations(self, customer_id: str, recommendation_type: Optional[str] = None,
+                                  limit: int = 50) -> Dict[str, Any]:
+        """List optimization recommendations for the account."""
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            ga = client.get_service("GoogleAdsService")
+            q = ("SELECT recommendation.resource_name, recommendation.type, "
+                 "recommendation.dismissed, campaign.name, campaign.id "
+                 "FROM recommendation")
+            if recommendation_type:
+                q += f" WHERE recommendation.type = '{recommendation_type.upper()}'"
+            q += f" LIMIT {int(limit)}"
+            recs = []
+            for row in ga.search(customer_id=customer_id, query=q):
+                recs.append({
+                    "resource_name": row.recommendation.resource_name,
+                    "type": row.recommendation.type_.name,
+                    "dismissed": row.recommendation.dismissed,
+                    "campaign_id": str(row.campaign.id) if row.campaign.id else None,
+                    "campaign_name": row.campaign.name or None,
+                })
+            return {"success": True, "recommendations": recs, "count": len(recs)}
+        except GoogleAdsException as e:
+            logger.error(f"Failed to get recommendations: {e}")
+            return self.error_handler.format_error_response(e)
+
+    async def apply_recommendation(self, customer_id: str, recommendation_resource_name: str,
+                                   validate_only: bool = False) -> Dict[str, Any]:
+        """Apply a recommendation by resource name."""
+        try:
+            from .utils import run_mutate
+            client = self.auth_manager.get_client(customer_id)
+            svc = client.get_service("RecommendationService")
+            op = client.get_type("ApplyRecommendationOperation")
+            op.resource_name = recommendation_resource_name
+            request = client.get_type("ApplyRecommendationRequest")
+            request.customer_id = str(customer_id).replace("-", "")
+            request.operations.append(op)
+            request.validate_only = validate_only
+            resp = svc.apply_recommendation(request=request)
+            return {
+                "success": True,
+                "applied": [r.resource_name for r in resp.results],
+                "validate_only": validate_only,
+            }
+        except GoogleAdsException as e:
+            logger.error(f"Failed to apply recommendation: {e}")
+            return self.error_handler.format_error_response(e)
+
+    async def dismiss_recommendation(self, customer_id: str,
+                                     recommendation_resource_name: str) -> Dict[str, Any]:
+        """Dismiss (hide) a recommendation by resource name."""
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            svc = client.get_service("RecommendationService")
+            op = client.get_type("DismissRecommendationRequest.DismissRecommendationOperation")
+            op.resource_name = recommendation_resource_name
+            request = client.get_type("DismissRecommendationRequest")
+            request.customer_id = str(customer_id).replace("-", "")
+            request.operations.append(op)
+            resp = svc.dismiss_recommendation(request=request)
+            return {"success": True, "dismissed": [r.resource_name for r in resp.results]}
+        except GoogleAdsException as e:
+            logger.error(f"Failed to dismiss recommendation: {e}")
+            return self.error_handler.format_error_response(e)
+
+    async def get_change_history(self, customer_id: str, days_ago: int = 14,
+                                 limit: int = 200) -> Dict[str, Any]:
+        """Get recent account changes from the change_event resource."""
+        try:
+            days_ago = max(1, min(int(days_ago), 29))  # API allows the last 30 days
+            client = self.auth_manager.get_client(customer_id)
+            ga = client.get_service("GoogleAdsService")
+            start = (datetime.utcnow().date() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            end = datetime.utcnow().date().strftime("%Y-%m-%d")
+            q = f"""
+                SELECT change_event.change_date_time, change_event.change_resource_type,
+                    change_event.resource_change_operation, change_event.user_email,
+                    change_event.client_type, change_event.changed_fields,
+                    change_event.campaign, change_event.ad_group
+                FROM change_event
+                WHERE change_event.change_date_time >= '{start}'
+                    AND change_event.change_date_time <= '{end} 23:59:59'
+                ORDER BY change_event.change_date_time DESC
+                LIMIT {int(limit)}
+            """
+            changes = []
+            for row in ga.search(customer_id=customer_id, query=q):
+                ce = row.change_event
+                changes.append({
+                    "when": ce.change_date_time,
+                    "resource_type": ce.change_resource_type.name,
+                    "operation": ce.resource_change_operation.name,
+                    "user": ce.user_email,
+                    "client_type": ce.client_type.name,
+                    "changed_fields": list(ce.changed_fields.paths) if ce.changed_fields.paths else [],
+                    "campaign": ce.campaign or None,
+                    "ad_group": ce.ad_group or None,
+                })
+            return {"success": True, "changes": changes, "count": len(changes)}
+        except GoogleAdsException as e:
+            logger.error(f"Failed to get change history: {e}")
+            return self.error_handler.format_error_response(e)
+
+    async def search_geo_targets(self, customer_id: str, names: List[str],
+                                 country_code: str = "IN", locale: str = "en") -> Dict[str, Any]:
+        """Resolve place names to geo target constants for location targeting."""
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            gtc = client.get_service("GeoTargetConstantService")
+            req = client.get_type("SuggestGeoTargetConstantsRequest")
+            req.locale = locale
+            req.country_code = country_code
+            for n in names:
+                req.location_names.names.append(n)
+            resp = gtc.suggest_geo_target_constants(request=req)
+            out = []
+            for s in resp.geo_target_constant_suggestions:
+                g = s.geo_target_constant
+                out.append({
+                    "resource_name": g.resource_name,
+                    "id": str(g.id),
+                    "name": g.name,
+                    "canonical_name": g.canonical_name,
+                    "target_type": g.target_type,
+                    "country_code": g.country_code,
+                    "reach": s.reach,
+                })
+            return {"success": True, "results": out, "count": len(out)}
+        except GoogleAdsException as e:
+            logger.error(f"Failed to search geo targets: {e}")
+            return self.error_handler.format_error_response(e)
+
     def _register_search_intelligence_tools(self) -> Dict[str, Dict[str, Any]]:
         """Register search terms analysis and negative keyword intelligence tools."""
         return {

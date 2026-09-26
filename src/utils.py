@@ -1,9 +1,46 @@
 """Utility functions for Google Ads MCP server."""
 
-from typing import Union, Optional, Tuple
+from typing import Union, Optional, Tuple, List, Any
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 import re
+
+
+def run_mutate(
+    client,
+    method,
+    request_type_name: str,
+    customer_id: str,
+    operations: List[Any],
+    validate_only: bool = False,
+    partial_failure: bool = False,
+):
+    """Execute a mutate call with support for validate_only (dry-run).
+
+    The installed google-ads library does not accept ``validate_only`` as a
+    keyword on the mutate_* methods; it must be set on a request object. This
+    helper builds the correct request type and invokes the bound method so that
+    every mutating tool can offer a dry-run without duplicating boilerplate.
+
+    Args:
+        client: An authenticated GoogleAdsClient.
+        method: The bound mutate method, e.g. campaign_service.mutate_campaigns.
+        request_type_name: The request message name, e.g. "MutateCampaignsRequest".
+        customer_id: The operating customer ID (no dashes).
+        operations: A list of operation protos.
+        validate_only: When True, the API validates without applying changes.
+        partial_failure: When True, valid operations succeed even if some fail.
+
+    Returns:
+        The mutate response (empty results when validate_only=True).
+    """
+    request = client.get_type(request_type_name)
+    request.customer_id = str(customer_id).replace("-", "")
+    for op in operations:
+        request.operations.append(op)
+    request.validate_only = validate_only
+    request.partial_failure = partial_failure
+    return method(request=request)
 
 
 def micros_to_currency(micros: int) -> float:
